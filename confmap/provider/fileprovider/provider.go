@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"go.opentelemetry.io/collector/confmap"
+	"gopkg.in/yaml.v3"
 )
 
 const schemeName = "file"
@@ -40,6 +41,65 @@ func newProvider(confmap.ProviderSettings) confmap.Provider {
 	return &provider{}
 }
 
+func getCredentials(filePath string) (string, string, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", "", err
+	}
+	var apiKey, apiSecret string
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "API_KEY=") {
+			apiKey = strings.TrimPrefix(line, "API_KEY=")
+		}
+		if strings.HasPrefix(line, "API_SECRET=") {
+			apiSecret = strings.TrimPrefix(line, "API_SECRET=")
+		}
+	}
+	return apiKey, apiSecret, nil
+}
+
+func replaceConfig(config []byte, clientID, clientSecret string) ([]byte, error) {
+	// 1. Parse the YAML content into a generic map
+	var configMap map[string]interface{}
+	err := yaml.Unmarshal(config, &configMap)
+	if err != nil {
+		// If YAML parsing fails, return original config
+		return config, fmt.Errorf("error parsing YAML: %w", err)
+	}
+
+	// 2. Navigate and replace credentials
+	// Path: exporters -> keys containing "opsrampotlp" -> security -> client_id/client_secret
+	if exporters, ok := configMap["exporters"].(map[string]interface{}); ok {
+		for exporterName, exporterConfig := range exporters {
+			// Check if the key contains "opsrampotlp"
+			if strings.Contains(exporterName, "opsrampotlp") {
+				if exporterMap, ok := exporterConfig.(map[string]interface{}); ok {
+					if security, ok := exporterMap["security"].(map[string]interface{}); ok {
+						// Update the values
+						security["client_id"] = clientID
+						security["client_secret"] = clientSecret
+					} else {
+						return config, fmt.Errorf("security section not found or invalid for exporter %q in YAML", exporterName)
+					}
+				}
+			}
+		}
+	} else {
+		return config, fmt.Errorf("exporters section not found or invalid in YAML")
+	}
+
+	// 3. Marshal back to YAML
+	updatedYAML, err := yaml.Marshal(configMap)
+	if err != nil {
+		// If marshaling fails, return original config
+		return config, fmt.Errorf("error marshaling updated config to YAML: %w", err)
+	}
+
+	return updatedYAML, nil
+}
+
 func (fmp *provider) Retrieve(_ context.Context, uri string, _ confmap.WatcherFunc) (*confmap.Retrieved, error) {
 	if !strings.HasPrefix(uri, schemeName+":") {
 		return nil, fmt.Errorf("%q uri is not supported by %q provider", uri, schemeName)
@@ -51,7 +111,15 @@ func (fmp *provider) Retrieve(_ context.Context, uri string, _ confmap.WatcherFu
 		return nil, fmt.Errorf("unable to read the file %v: %w", uri, err)
 	}
 
-	return confmap.NewRetrievedFromYAML(content)
+	apiKey, apiSecret, err := getCredentials("/etc/nsg/regInfo")
+	if err != nil {
+		return nil, fmt.Errorf("error reading credentials file: %w", err)
+	}
+	updatedConfig, err := replaceConfig(content, apiKey, apiSecret)
+	if err != nil {
+		return nil, fmt.Errorf("error replacing credentials in config: %w", err)
+	}
+	return confmap.NewRetrievedFromYAML(updatedConfig)
 }
 
 func (*provider) Scheme() string {
