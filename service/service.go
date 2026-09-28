@@ -29,7 +29,6 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/processor"
 	"go.opentelemetry.io/collector/receiver"
-	semconv "go.opentelemetry.io/collector/semconv/v1.26.0"
 	"go.opentelemetry.io/collector/service/extensions"
 	"go.opentelemetry.io/collector/service/internal/builders"
 	"go.opentelemetry.io/collector/service/internal/graph"
@@ -120,7 +119,9 @@ func New(ctx context.Context, set Settings, cfg Config) (*Service, error) {
 	res := resource.New(set.BuildInfo, cfg.Telemetry.Resource)
 	pcommonRes := pdataFromSdk(res)
 
-	sch := semconv.SchemaURL
+	// Align the telemetry resource schema URL with the compiled-in OpenTelemetry SDK
+	// default resource so the SDK's resource.Merge does not fail on a schema mismatch.
+	sch := sdkresource.Default().SchemaURL()
 	cfgRes := config.Resource{
 		SchemaUrl:  &sch,
 		Attributes: attributes(res, cfg.Telemetry),
