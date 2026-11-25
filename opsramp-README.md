@@ -3,7 +3,7 @@
 ## Section 1: Building and Running as a Binary
 
 ### Prerequisites
-- Go >= 1.20
+- Go 1.27.4 for builds that include the standard-library security fix below.
 
 ### 1. Build the Collector Binary
 Run the following command from the root of the repository to build the collector binary:
@@ -96,6 +96,12 @@ service:
 
 ### 1. Build the Docker Image
 
+The [Dockerfile](./Dockerfile) builds the binary from
+[`cmd/otelcorecol/go.mod`](./cmd/otelcorecol/go.mod), not the repository-root
+module. Keep dependency security updates in that nested module and its
+`go.sum`. Regenerating this module with the collector builder can overwrite
+these dependency selections; reapply and verify them before building an image.
+
 ```bash
 docker build -t <your-dockerhub-username>/otelcol:latest .
 ```
@@ -105,6 +111,40 @@ Push the image to your registry:
 ```bash
 docker push <your-dockerhub-username>/otelcol:latest
 ```
+
+#### Security fixes (2026-11-24)
+
+Earlier images included dependencies affected by the reported HIGH and MEDIUM
+denial-of-service, memory exhaustion, HTTP response smuggling, and HTML rendering
+vulnerabilities. Rebuild and redeploy the collector image to pick up these fixes;
+existing images do not change automatically. No collector configuration changes
+are required.
+
+| Component | Updated version | Reported vulnerabilities addressed |
+|-----------|-----------------|-------------------------------------|
+| FIPS Go builder / standard library | 1.27.4 | CVE-2026-97054 |
+| `github.com/klauspost/compress` | 1.18.7 | CVE-2026-63209 |
+| `golang.org/x/net` | 0.62.0 | CVE-2026-78659, CVE-2026-78660, CVE-2026-78661, CVE-2026-78663, CVE-2026-78669, CVE-2026-97032, CVE-2026-97045 |
+| OpenTelemetry SDK, trace API, and log SDK | 1.47.0 | CVE-2026-128085, CVE-2026-81872 |
+| OpenTelemetry OTLP HTTP log exporter | 0.23.0 | CVE-2026-39882 |
+| OpenTelemetry OTLP HTTP metric and trace exporters | 1.43.0 | CVE-2026-39882 |
+
+The logging API update also requires compatible stdout logging and Zap bridge
+dependencies. The build retains the existing FIPS base-image choices; this
+dependency update does not certify FIPS compliance. LOW-only findings remain
+outside this update's scope.
+
+For verification, run from the repository root:
+
+```bash
+docker build --pull --progress=plain -t otelcorecol:security-fix .
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock:ro aquasec/trivy:latest image --scanners vuln --severity HIGH,MEDIUM --exit-code 1 --no-progress otelcorecol:security-fix
+```
+
+Rescan each release image with an up-to-date vulnerability database. The local
+verification scan found no HIGH or MEDIUM findings, but reported skipped OS
+packages with mismatched package namespaces; it does not establish complete OS
+package coverage.
 
 ### 2. Deploy on Kubernetes
 
